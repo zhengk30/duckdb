@@ -6,6 +6,7 @@
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 
 #include "duckdb/execution/expression_executor.hpp"
+#include "../../../../third_party/re2/re2/re2.h"
 
 namespace duckdb {
 
@@ -220,11 +221,89 @@ static unique_ptr<FunctionData> LikeBindFunction(ClientContext &context, ScalarF
 }
 
 bool LikeOperatorFunction(const char *s, idx_t slen, const char *pattern, idx_t plen, char escape) {
-	return TemplatedLikeOperator<'%', '_', true>(s, slen, pattern, plen, escape);
+	//return TemplatedLikeOperator<'%', '_', true>(s, slen, pattern, plen, escape);
+    if (plen == 1 && pattern[0] == escape ||
+        pattern[plen-1] != pattern[plen-2] && pattern[plen-1] == escape) {
+        throw SyntaxException("Like pattern must not end with escape character!");
+    }
+    char pbuf[2*plen+1];
+    int i = 0, j = 0;
+    while (i < plen) {
+        char cur_char = pattern[i];
+        if (cur_char == '%') {
+            if (i > 0 && pattern[i-1] == escape) {
+                pbuf[j++] = '%';
+            } else {
+                pbuf[j++] = '.';
+                pbuf[j++] = '*';
+            }
+        } else if (cur_char == '_') {
+            if (i > 0 && pattern[i-1] == escape) {
+                pbuf[j++] = '_';
+            } else {
+                pbuf[j++] = '.';
+            }
+            //else if (pbuf[j] != '*') {
+            //    pbuf[j++] = '*';
+            //}
+        } else if (cur_char == escape) {
+            i++;
+            if (i == plen) break;
+            pbuf[j++] = pattern[i];
+            if (pattern[i] == '\\') {
+                pbuf[j++] = '\\';
+            }
+        } else {
+            if (cur_char == '*' || cur_char == '?' || cur_char == '+' || cur_char == '{') {
+                pbuf[j++] = '\\';
+            }
+            pbuf[j++] = cur_char;
+        }
+        i++;
+    }
+    pbuf[j] = '\0';
+    std::string pstr(pbuf, j);
+    duckdb_re2::RE2 pregex(pstr);
+    duckdb_re2::StringPiece sstr(s, slen);
+    return RE2::FullMatch(sstr, pregex);
 }
 
+
 bool LikeOperatorFunction(const char *s, idx_t slen, const char *pattern, idx_t plen) {
-	return TemplatedLikeOperator<'%', '_', false>(s, slen, pattern, plen, '\0');
+	//return TemplatedLikeOperator<'%', '_', false>(s, slen, pattern, plen, '\0');
+    if (std::memchr(s, '\n', slen) != nullptr) {
+        return TemplatedLikeOperator<'%', '_', false>(s, slen, pattern, plen, '\0');
+    }
+    //std::vector<char> pvec;
+    //for (int i = 0; i < plen; i++) {
+    //    char c = pattern[i];
+    //    if (c == '%') {
+    //        pvec.push_back('.');
+    //        pvec.push_back('*');
+    //    } else if (c == '_') {
+    //        pvec.push_back('.');
+    //    } else {
+    //        pvec.push_back(c);
+    //    }
+    //}
+    //std::string pstr(pvec.begin(), pvec.end());
+    char pbuf[2 * plen+1];
+    int j = 0;
+    for (int i = 0; i < plen; i++) {
+        if (pattern[i] == '_') {
+            pbuf[j++] = '.';
+        } else if (pattern[i] == '%') {
+            pbuf[j++] = '.';
+            pbuf[j++] = '*';
+        } else {
+            pbuf[j++] = pattern[i];
+        }
+    }
+    pbuf[j] = '\0';
+    std::string pstr(pbuf, j);
+    duckdb_re2::RE2 pregex(pstr);
+    duckdb_re2::StringPiece strp(s, slen);
+    return RE2::FullMatch(strp, pregex);
 }
 
 bool LikeOperatorFunction(string_t &s, string_t &pat) {
